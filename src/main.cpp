@@ -3,16 +3,78 @@
 #define BASE_LINNEAR_X (0.25)
 #define BASE_ANGULAR_Z (0.8)
 
+#define PRESSURES   							false
+#define RUMBLE      							false
+
+#define PS2_DAT        							11    
+#define PS2_CMD        							10
+#define PS2_SEL        							8
+#define PS2_CLK        							9
+
+#define CATHODE_LED                             A3
+#define ANODE_LED                               A1
+
+#define BELL_PIN                                A0
+
+#define sgn(x)                                  ((x) < 0 ? -1 : 1)
+
+#define ENA_PIN_LEFT                            2
+#define DIR_PIN_LEFT                            3
+#define PUL_PIN_LEFT                            4
+#define ENA_PIN_RIGHT                           5
+#define DIR_PIN_RIGHT                           6
+#define PUL_PIN_RIGHT                           7
+
+#define LOCK_TIMER_TICK                         1   // 2 * 0.5 us
+#define TIMER_TICK                              (100 * LOCK_TIMER_TICK)   // us
+
+#define PPR                                     1500
+#define RADIUS                                  0.0475
+#define LENGTH                                  0.23
+#define PI                                      3.14
+
+#define V_MAX                                   0.75    // m/s
+#define V_MIN                                   0.01    // m/s
+
+volatile int char_temp = 0;    // for incoming serial data
+int8_t vel_idx = 0;
+volatile float twist_v = 0.0;
+volatile float twist_w = 0.0;
+char* c_token;
+static int8_t is_processing = 0;
+static int8_t buf_temp[20];
+
+volatile int16_t pulse_max_right = 0;
+volatile int16_t pulse_max_left = 0;
+volatile int16_t pulse_counter_right = 0;
+volatile int16_t pulse_counter_left = 0;
+volatile int8_t pulse_on_right = 0;
+volatile int8_t pulse_on_left = 0;
+
+PS2X ps2x;
+int8_t error = 0;
+int8_t type = 0;
+int8_t vibrate = 0;
+
 volatile uint32_t system_timeout = 0;
 volatile bool manual_mode = false;
 volatile bool reset_board = false;
 volatile uint32_t last_cmd_receive = 0;
 
-volatile uint8_t bell_pending = false;
-volatile uint32_t pre_bell = 0;
-volatile uint8_t allow_ring = true;
+uint8_t bell_pending = false;
+uint32_t pre_bell = 0;
+uint8_t allow_ring = true;
 
 void ps2_control();
+
+void enable_left_motor(bool ena);
+void enable_right_motor(bool ena);
+void dir_left_motor(bool dir);
+void dir_right_motor(bool dir);
+void control_step(float tl, float tr);
+bool get_vel();
+void set_timer();
+void control_motor(float v, float w);
 
 void setup()
 {
@@ -39,8 +101,8 @@ void setup()
     digitalWrite(ANODE_LED, LOW);
     digitalWrite(BELL_PIN, LOW);
 
-    enable_left_motor(false);
-    enable_right_motor(false);
+    enable_motor(ENA_PIN_LEFT, false);
+    enable_motor(ENA_PIN_RIGHT, false);
 
     bell_pending = false;
     manual_mode = false;
@@ -60,60 +122,7 @@ void loop()
         }
     }
 
-    if (bell_pending == true)
-    {
-        if (allow_ring == true)
-        {
-            if (((millis() / 1000) - pre_bell) <= 3)
-            {
-                digitalWrite(BELL_PIN, HIGH);
-            }
-            else
-            {
-                digitalWrite(BELL_PIN, LOW);
-                bell_pending = false;
-            }
-        }
-    }
-    else
-    {
-        digitalWrite(BELL_PIN, LOW);
-    }
-
-    /* Read Game Pad */
-    // ps2x.read_gamepad();
-
-    // if (ps2x.ButtonReleased(PSB_R1))
-    // {
-    //     manual_mode = !manual_mode;
-
-    //     if (manual_mode == true)
-    //     {
-    //         allow_ring = false;
-    //     }
-    //     else
-    //     {
-    //         allow_ring = true;
-    //     }
-    //     digitalWrite(ANODE_LED, !digitalRead(ANODE_LED));
-    // }
-    // else if (ps2x.ButtonReleased(PSB_R2))
-    // {
-    //     reset_board = true;
-    // }
-
-    // if (reset_board == true)
-    // {
-    //     bell_pending = false;
-    //     manual_mode = false;
-    //     pre_bell = 0;
-    //     resetBoardFunc();
-    // }
-
-    // if (manual_mode == true)
-    // {
-    //     ps2_control();
-    // }
+    bell_ring(BELL_PIN, bell_pending, allow_ring, pre_bell);
 
 } /*END_LOOP*/
 
@@ -134,19 +143,19 @@ void control_motor(float v, float w)
 
     if (abs(vl) < V_MIN)
     {
-        enable_left_motor(false);
+        enable_motor(ENA_PIN_LEFT, false);
     }
     else
     {
-        enable_left_motor(true);
+        enable_motor(ENA_PIN_LEFT, true);
     }
     if (abs(vr) < V_MIN)
     {
-        enable_right_motor(false);
+        enable_motor(ENA_PIN_RIGHT, false);
     }
     else
     {
-        enable_right_motor(true);
+        enable_motor(ENA_PIN_RIGHT, true);
     }
     if ((abs(vl) < V_MIN) && (abs(vr) < V_MIN))
     {
@@ -156,77 +165,55 @@ void control_motor(float v, float w)
     // Time of a half of pulse
     float Thl = (PI * RADIUS * 1000000) / (vl * PPR); // in us
     float Thr = (PI * RADIUS * 1000000) / (vr * PPR); // in us
+
     control_step(Thl / TIMER_TICK, Thr / TIMER_TICK);
 } /* CONTROL_MOTOR */
 
-void enable_left_motor(bool ena)
-{
-    if (ena)
-    {
-        digitalWrite(ENA_PIN_LEFT, LOW);
-    }
-    else
-    {
-        digitalWrite(ENA_PIN_LEFT, HIGH);
-    }
-} /* ENABLE_LEFT_MOTOR */
 
-void enable_right_motor(bool ena)
-{
-    if (ena)
-    {
-        digitalWrite(ENA_PIN_RIGHT, LOW);
-    }
-    else
-    {
-        digitalWrite(ENA_PIN_RIGHT, HIGH);
-    }
-} /* ENABLE_RIGHT_MOTOR */
+// void dir_left_motor(bool dir)
+// {
+//     if (dir)
+//     {
+//         digitalWrite(DIR_PIN_LEFT, L_CW);
+//     }
+//     else
+//     {
+//         digitalWrite(DIR_PIN_LEFT, L_CCW);
+//     }
+// } /* DIR_LEFT_MOTOR */
 
-void dir_left_motor(bool dir)
-{
-    if (dir)
-    {
-        digitalWrite(DIR_PIN_LEFT, L_CW);
-    }
-    else
-    {
-        digitalWrite(DIR_PIN_LEFT, L_CCW);
-    }
-} /* DIR_LEFT_MOTOR */
-
-void dir_right_motor(bool dir)
-{
-    if (dir)
-    {
-        digitalWrite(DIR_PIN_RIGHT, R_CW);
-    }
-    else
-    {
-        digitalWrite(DIR_PIN_RIGHT, R_CCW);
-    }
-} /* DIR_RIGHT_MOTOR */
+// void dir_right_motor(bool dir)
+// {
+//     if (dir)
+//     {
+//         digitalWrite(DIR_PIN_RIGHT, R_CW);
+//     }
+//     else
+//     {
+//         digitalWrite(DIR_PIN_RIGHT, R_CCW);
+//     }
+// } /* DIR_RIGHT_MOTOR */
 
 void control_step(float tl, float tr)
 {
     if (tl > 0)
     {
-        dir_left_motor(false);
+        dir_motor(ENA_PIN_LEFT ,false);
         pulse_max_left = (int)tl;
     }
     else
     {
-        dir_left_motor(true);
+        dir_motor(ENA_PIN_RIGHT ,true);
         pulse_max_left = (int)(-tl);
     }
     if (tr > 0)
     {
-        dir_right_motor(false);
+        dir_motor(ENA_PIN_RIGHT ,false);
         pulse_max_right = (int)tr;
     }
     else
     {
-        dir_right_motor(true);
+        dir_motor(ENA_PIN_RIGHT ,true);
         pulse_max_right = (int)(-tr);
     }
 } /* CONTROL_STEP */
